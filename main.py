@@ -25,9 +25,32 @@ TMDB_KEY = os.environ.get("TMDB_API_KEY", "")
 OMDB_KEY = os.environ.get("OMDB_API_KEY", "")  # optioneel
 MOCK_MODE = os.environ.get("MOCK_MODE", "0") == "1"
 DB_PATH = os.environ.get("DB_PATH", "watched.db")  # SQLite-bestand voor kijklijsten
-DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "en-US")  # standaardtaal als er geen wordt meegegeven
+DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "en")  # standaardtaal (korte code) als er geen wordt meegegeven
 
 TMDB_BASE = "https://api.themoviedb.org/3"
+
+# Korte taalcodes die de APP stuurt -> volledige TMDB-codes.
+# De app hoeft zo niets te weten van TMDB's xx-XX-notatie; onbekende of lege
+# invoer valt terug op de standaard, zodat een typefout nooit een crash geeft.
+LANG_MAP = {
+    "en": "en-US",
+    "nl": "nl-NL",
+    "de": "de-DE",
+    "fr": "fr-FR",
+    "es": "es-ES",
+}
+
+
+def resolve_lang(code: Optional[str]) -> str:
+    """Zet een korte taalcode (en, nl, ...) om naar TMDB-formaat (en-US, ...).
+
+    Accepteert ook al-volledige codes (en-US) en hoofdletters (EN), en valt bij
+    onbekende of ontbrekende invoer terug op de standaardtaal.
+    """
+    if not code:
+        return LANG_MAP[DEFAULT_LANG]
+    key = code.strip().lower()[:2]        # 'nl-NL' of 'NL' -> 'nl'
+    return LANG_MAP.get(key, LANG_MAP[DEFAULT_LANG])
 
 app = FastAPI(
     title="Top-30 Films & Series API",
@@ -169,16 +192,17 @@ def get_watched(device_id: str, media_type: MediaType = "movie"):
 @app.get("/api/genres")
 async def genres(
     media_type: MediaType = "movie",
-    language: str = Query(DEFAULT_LANG, description="Taalcode, bijv. en-US, nl-NL, de-DE, fr-FR, es-ES"),
+    language: str = Query(DEFAULT_LANG, description="Korte taalcode: en, nl, de, fr, es (standaard en)"),
 ):
     """Lijst van beschikbare genres voor films of tv-series, in de gevraagde taal."""
     if MOCK_MODE:
         return {"genres": [{"id": 18, "name": "Drama"}, {"id": 35, "name": "Comedy"}]}
-    cache_key = (media_type, language)
+    lang = resolve_lang(language)
+    cache_key = (media_type, lang)
     if cache_key in genre_cache:
         return genre_cache[cache_key]
     async with httpx.AsyncClient() as client:
-        data = await tmdb_get(client, f"/genre/{media_type}/list", language=language)
+        data = await tmdb_get(client, f"/genre/{media_type}/list", language=lang)
     genre_cache[cache_key] = data
     return data
 
@@ -199,7 +223,7 @@ async def top30(
     device_id: Optional[str] = Query(None, description="Device-ID; nodig voor exclude_watched"),
     exclude_watched: bool = Query(False, description="Verberg titels die dit device al gezien heeft"),
     limit: int = Query(30, ge=1, le=100, description="Aantal titels in de lijst (bijv. 10 of 30)"),
-    language: str = Query(DEFAULT_LANG, description="Taalcode, bijv. en-US, nl-NL, de-DE, fr-FR, es-ES"),
+    language: str = Query(DEFAULT_LANG, description="Korte taalcode: en, nl, de, fr, es (standaard en)"),
 ):
     """
     Genereer een top-lijst op basis van de opgegeven filters.
@@ -208,17 +232,18 @@ async def top30(
     Met exclude_watched=true + device_id worden gezien titels weggelaten en schuift
     de lijst op, zodat je altijd een volle top krijgt van wat je nog niet zag.
     """
+    lang = resolve_lang(language)
     if MOCK_MODE:
         items = mock_items(media_type)
     else:
         cache_key = (media_type, genre_id, actor, director, year_min, year_max,
-                     rating_min, rating_max, sort_by, min_votes, language)
+                     rating_min, rating_max, sort_by, min_votes, lang)
         if cache_key in list_cache:
             items = list_cache[cache_key]
         else:
             items = await fetch_from_tmdb(media_type, genre_id, actor, director,
                                           year_min, year_max, rating_min, rating_max,
-                                          min_votes, language)
+                                          min_votes, lang)
             list_cache[cache_key] = items
 
     # Sorteren
@@ -267,7 +292,7 @@ async def fetch_from_tmdb(media_type, genre_id, actor, director,
         "vote_count.gte": min_votes,
         "vote_average.gte": rating_min,
         "vote_average.lte": rating_max,
-        "language": language,
+        "language": resolve_lang(language),  # accepteert korte code én al-volledige code
     }
     if genre_id:
         params["with_genres"] = genre_id
