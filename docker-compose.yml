@@ -1,0 +1,11 @@
+services:
+  top30-api:
+    build: .
+    container_name: top30-api
+    ports:
+      - "8000:8000"
+    environment:
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - OMDB_API_KEY=${OMDB_API_KEY:-}
+      - MOCK_MODE=${MOCK_MODE:-0}
+    restart: unless-stopped
