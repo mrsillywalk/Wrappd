@@ -37,6 +37,7 @@ DB_PATH = os.environ.get("DB_PATH", "watched.db")  # SQLite-bestand voor kijklij
 DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "en-US")  # standaardtaal als er geen wordt meegegeven
 BAYES_M = float(os.environ.get("BAYES_M", "500"))  # drempel voor het Bayesiaanse gemiddelde (IMDb-methode)
 REDIS_URL = os.environ.get("REDIS_URL", "")  # bijv. redis://localhost:6379/0; leeg = alleen geheugen
+POOL_PAGES = int(os.environ.get("POOL_PAGES", "5"))  # TMDB-pagina's (20 per pagina) voor de pool om uit bij te vullen
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 
@@ -465,15 +466,20 @@ async def fetch_from_tmdb(media_type, genre_id, actor, director,
                 raise HTTPException(404, f"Regisseur '{director}' niet gevonden.")
             params["with_crew"] = pid
 
-        # Haal 2 pagina's op (40 titels) zodat er na filtering genoeg overblijft
-        pages = await asyncio.gather(
-            tmdb_get(client, f"/discover/{media_type}", page=1, **params),
-            tmdb_get(client, f"/discover/{media_type}", page=2, **params),
-        )
+        # Haal een diepere pool op (POOL_PAGES × 20 titels) zodat de app kan
+        # bijvullen als je gezien titels verbergt. Alle pagina's parallel.
+        pages = await asyncio.gather(*[
+            tmdb_get(client, f"/discover/{media_type}", page=p, **params)
+            for p in range(1, POOL_PAGES + 1)
+        ])
 
     items = []
+    seen_ids = set()  # dedup: TMDB kan bij weinig pagina's de laatste herhalen
     for page in pages:
         for r in page.get("results", []):
+            if r["id"] in seen_ids:
+                continue
+            seen_ids.add(r["id"])
             date = r.get("release_date") or r.get("first_air_date") or ""
             items.append({
                 "id": r["id"],
