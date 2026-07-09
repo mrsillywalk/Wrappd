@@ -116,6 +116,7 @@ class Cache:
 genre_cache = Cache("genre", ttl=86400, maxsize=8)
 list_cache = Cache("list", ttl=3600, maxsize=512)
 person_cache = Cache("person", ttl=86400, maxsize=1024)
+person_search_cache = Cache("psearch", ttl=86400, maxsize=512)  # suggesties tijdens typen
 
 MediaType = Literal["movie", "tv"]
 
@@ -352,6 +353,53 @@ async def genres(
         data = await tmdb_get(client, f"/genre/{media_type}/list", language=language)
     await genre_cache.set(cache_key, data)
     return data
+
+
+@app.get("/api/search/person")
+async def search_person(
+    query: str = Query(..., min_length=1, description="Deel van een acteurs-/regisseursnaam"),
+    language: str = Query(DEFAULT_LANG, description="Taalcode"),
+):
+    """
+    Geeft kandidaat-namen terug terwijl je typt (voor auto-suggest in de app).
+    Levert per persoon een naam, id, foto en de bekendste titels.
+    """
+    q = query.strip().lower()
+    if not q:
+        return {"results": []}
+
+    if MOCK_MODE:
+        return {"results": [
+            {"id": 1, "name": "Seth Rogen", "profile": None, "known_for": "Superbad, Knocked Up"},
+            {"id": 2, "name": "Conor McGregor", "profile": None, "known_for": "Road House"},
+        ]}
+
+    cache_key = (q, language)
+    cached = await person_search_cache.get(cache_key)
+    if cached is not MISS:
+        return cached
+
+    async with httpx.AsyncClient() as client:
+        data = await tmdb_get(client, "/search/person", query=query, language=language)
+
+    results = []
+    for p in data.get("results", [])[:8]:  # max 8 suggesties
+        known = [
+            (t.get("title") or t.get("name"))
+            for t in (p.get("known_for") or [])[:2]
+            if (t.get("title") or t.get("name"))
+        ]
+        results.append({
+            "id": p["id"],
+            "name": p["name"],
+            "profile": f"https://image.tmdb.org/t/p/w185{p['profile_path']}"
+            if p.get("profile_path") else None,
+            "known_for": ", ".join(known),
+        })
+
+    payload = {"results": results}
+    await person_search_cache.set(cache_key, payload)
+    return payload
 
 
 @app.get("/api/top30")
